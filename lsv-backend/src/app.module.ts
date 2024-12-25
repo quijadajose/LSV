@@ -9,10 +9,9 @@ import { validate } from './config/env.validation';
   imports: [
     ConfigModule.forRoot({
       validate, // Usa la función de validación con class-validator
-      isGlobal: true, // Opcional: para hacerlo global
+      isGlobal: true,
     }),
     TypeOrmModule.forRootAsync({
-      imports: [ConfigModule], // Si no es global
       inject: [ConfigService],
       useFactory: async (configService: ConfigService) => ({
         type: 'mysql',
