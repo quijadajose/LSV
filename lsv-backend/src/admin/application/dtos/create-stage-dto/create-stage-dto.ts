@@ -1,10 +1,6 @@
 import { IsNotEmpty, IsString } from "class-validator";
 
-export class UpdateLanguageDto {
-    @IsNotEmpty()
-    @IsString()
-    id: string;
-    
+export class CreateStageDto {
     @IsNotEmpty()
     @IsString()
     name: string;
@@ -12,8 +8,8 @@ export class UpdateLanguageDto {
     @IsNotEmpty()
     @IsString()
     description: string;
-
+    
     @IsNotEmpty()
     @IsString()
-    content: string;
+    languageId: string;
 }
