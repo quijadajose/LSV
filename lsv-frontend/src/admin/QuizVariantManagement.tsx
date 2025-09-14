@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
   Card,
   Button,
@@ -10,20 +10,17 @@ import {
   Textarea,
   Spinner,
   Badge,
-  Tabs,
+  Table,
 } from "flowbite-react";
 import {
   HiPlus,
   HiTrash,
-  HiPencil,
-  HiArrowLeft,
   HiExclamationCircle,
   HiPhotograph,
 } from "react-icons/hi";
 import { useToast } from "../components/ToastProvider";
-import { quizApi } from "../services/api";
+import { quizVariantApi, lessonVariantApi, quizApi } from "../services/api";
 import { BACKEND_BASE_URL } from "../config";
-import QuizVariantManagement from "./QuizVariantManagement";
 
 interface QuizOption {
   id: string;
@@ -33,63 +30,92 @@ interface QuizOption {
 
 interface QuizQuestion {
   id: string;
-  text: string;
-  options: QuizOption[];
+  question: string;
+  optionVariants: QuizOption[];
 }
 
-interface Quiz {
+interface QuizVariant {
   id: string;
-  questions: QuizQuestion[];
-  lessonId: string;
+  lessonVariant: {
+    id: string;
+    name: string;
+    region: {
+      id: string;
+      name: string;
+      code: string;
+    };
+  };
+  questionVariants: QuizQuestion[];
 }
 
-interface NewQuizQuestion {
-  text: string;
-  options: {
-    text: string;
-    isCorrect: boolean;
-  }[];
+interface LessonVariant {
+  id: string;
+  name: string;
+  region: {
+    id: string;
+    name: string;
+    code: string;
+  };
+  isBase: boolean;
+  isRegionalSpecific: boolean;
 }
 
-export default function QuizManagement() {
+const QuizVariantManagement = () => {
   const { lessonId } = useParams<{ lessonId: string }>();
-  const navigate = useNavigate();
-  const addToast = useToast();
-
-  const [quizzes, setQuizzes] = useState<Quiz[]>([]);
+  const [quizVariants, setQuizVariants] = useState<QuizVariant[]>([]);
+  const [lessonVariants, setLessonVariants] = useState<LessonVariant[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [editingQuiz, setEditingQuiz] = useState<Quiz | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [selectedLessonVariantId, setSelectedLessonVariantId] =
+    useState<string>("");
+  const [questions, setQuestions] = useState<
+    Array<{
+      question: string;
+      options: Array<{ text: string; isCorrect: boolean }>;
+    }>
+  >([]);
+  const [creating, setCreating] = useState(false);
   const [uploadingImage, setUploadingImage] = useState<string | null>(null);
-
-  const [newQuestions, setNewQuestions] = useState<NewQuizQuestion[]>([]);
+  const [loadingQuestions, setLoadingQuestions] = useState(false);
+  const addToast = useToast();
 
   useEffect(() => {
     if (lessonId) {
-      fetchQuizzes();
+      loadData();
     }
   }, [lessonId]);
 
-  const fetchQuizzes = async () => {
+  const loadData = async () => {
     if (!lessonId) return;
 
-    setLoading(true);
-    setError(null);
-
     try {
-      const response = await quizApi.getQuizByLesson(lessonId);
+      setLoading(true);
+      setError(null);
+      const lessonResponse = await lessonVariantApi.getLessonVariants(lessonId);
 
-      if (response.success) {
-        setQuizzes(response.data || []);
+      if (lessonResponse.success) {
+        setLessonVariants(lessonResponse.data);
       } else {
-        const errorMsg = response.message || "Error al cargar los quizzes";
-        setError(errorMsg);
-        addToast("error", errorMsg);
+        throw new Error(
+          lessonResponse.message || "Error al cargar variantes de lección",
+        );
       }
+
+      const allQuizVariants: QuizVariant[] = [];
+      for (const lessonVariant of lessonResponse.data || []) {
+        const quizResponse = await quizVariantApi.getQuizVariants(
+          lessonVariant.id,
+        );
+
+        if (quizResponse.success && quizResponse.data) {
+          allQuizVariants.push(...quizResponse.data);
+        }
+      }
+      setQuizVariants(allQuizVariants);
     } catch (err) {
-      const errorMsg = "Error de conexión al cargar los quizzes";
+      const errorMsg =
+        err instanceof Error ? err.message : "Error al cargar los datos";
       setError(errorMsg);
       addToast("error", errorMsg);
     } finally {
@@ -97,69 +123,81 @@ export default function QuizManagement() {
     }
   };
 
-  const handleCreateQuiz = () => {
-    setNewQuestions([
-      {
-        text: "",
-        options: [
-          { text: "", isCorrect: false },
-          { text: "", isCorrect: false },
-        ],
-      },
-    ]);
-    setShowCreateModal(true);
-  };
+  const handleCreateQuizVariant = async () => {
+    if (!selectedLessonVariantId || questions.length === 0) {
+      addToast(
+        "error",
+        "Por favor selecciona una variante de lección y agrega al menos una pregunta",
+      );
+      return;
+    }
 
-  const handleEditQuiz = async (quiz: Quiz) => {
+    if (!validateQuiz()) {
+      return;
+    }
+
     try {
-      const response = await quizApi.getQuizForAdmin(quiz.id);
-
-      if (response.success && response.data) {
-        const fullQuiz = response.data;
-        setEditingQuiz(fullQuiz);
-        setNewQuestions(
-          fullQuiz.questions.map((q: any) => ({
-            text: q.text,
-            options: q.options.map((o: any) => ({
-              text: o.text,
-              isCorrect: o.isCorrect,
+      setCreating(true);
+      const response = await quizVariantApi.createQuizVariant({
+        lessonVariantId: selectedLessonVariantId,
+        questions: questions.map((q) => ({
+          question: q.question,
+          options: q.options
+            .filter((opt) => opt.text.trim())
+            .map((opt) => ({
+              text: opt.text,
+              isCorrect: opt.isCorrect,
             })),
-          })),
-        );
-        setShowCreateModal(true);
+        })),
+      });
+
+      if (response.success) {
+        addToast("success", "Variante de quiz creada exitosamente");
+        setShowCreateModal(false);
+        setQuestions([]);
+        setSelectedLessonVariantId("");
+        loadData();
       } else {
         addToast(
           "error",
-          response.message || "Error al cargar los datos del quiz",
+          response.message || "Error al crear la variante de quiz",
         );
       }
     } catch (err) {
-      addToast("error", "Error de conexión al cargar el quiz");
+      addToast("error", "Error al crear la variante de quiz");
+    } finally {
+      setCreating(false);
     }
   };
 
-  const handleDeleteQuiz = async (quizId: string) => {
-    if (!confirm("¿Estás seguro de que quieres eliminar este quiz?")) return;
+  const handleDeleteQuizVariant = async (id: string) => {
+    if (
+      !confirm("¿Estás seguro de que quieres eliminar esta variante de quiz?")
+    ) {
+      return;
+    }
 
     try {
-      const response = await quizApi.deleteQuiz(quizId);
-
+      const response = await quizVariantApi.deleteQuizVariant(id);
       if (response.success) {
-        addToast("success", "Quiz eliminado correctamente");
-        fetchQuizzes();
+        addToast("success", "Variante de quiz eliminada exitosamente");
+        loadData();
       } else {
-        addToast("error", response.message || "Error al eliminar el quiz");
+        addToast(
+          "error",
+          response.message || "Error al eliminar la variante de quiz",
+        );
       }
     } catch (err) {
-      addToast("error", "Error de conexión");
+      addToast("error", "Error al eliminar la variante de quiz");
     }
   };
 
   const addQuestion = () => {
-    setNewQuestions([
-      ...newQuestions,
+    setQuestions([
+      ...questions,
       {
-        text: "",
+        question: "",
         options: [
           { text: "", isCorrect: false },
           { text: "", isCorrect: false },
@@ -168,41 +206,44 @@ export default function QuizManagement() {
     ]);
   };
 
-  const removeQuestion = (index: number) => {
-    if (newQuestions.length > 1) {
-      setNewQuestions(newQuestions.filter((_, i) => i !== index));
-    }
-  };
-
-  const updateQuestion = (index: number, field: "text", value: string) => {
-    const updated = [...newQuestions];
-    updated[index][field] = value;
-    setNewQuestions(updated);
-  };
-
-  const addOption = (questionIndex: number) => {
-    const updated = [...newQuestions];
-    updated[questionIndex].options.push({ text: "", isCorrect: false });
-    setNewQuestions(updated);
-  };
-
-  const removeOption = (questionIndex: number, optionIndex: number) => {
-    const updated = [...newQuestions];
-    if (updated[questionIndex].options.length > 2) {
-      updated[questionIndex].options.splice(optionIndex, 1);
-      setNewQuestions(updated);
-    }
+  const updateQuestion = (index: number, field: string, value: any) => {
+    const newQuestions = [...questions];
+    newQuestions[index] = { ...newQuestions[index], [field]: value };
+    setQuestions(newQuestions);
   };
 
   const updateOption = (
     questionIndex: number,
     optionIndex: number,
-    field: "text" | "isCorrect",
-    value: string | boolean,
+    field: string,
+    value: any,
   ) => {
-    const updated = [...newQuestions];
-    (updated[questionIndex].options[optionIndex] as any)[field] = value;
-    setNewQuestions(updated);
+    const newQuestions = [...questions];
+    newQuestions[questionIndex].options[optionIndex] = {
+      ...newQuestions[questionIndex].options[optionIndex],
+      [field]: value,
+    };
+    setQuestions(newQuestions);
+  };
+
+  const removeQuestion = (index: number) => {
+    if (questions.length > 1) {
+      setQuestions(questions.filter((_, i) => i !== index));
+    }
+  };
+
+  const addOption = (questionIndex: number) => {
+    const updated = [...questions];
+    updated[questionIndex].options.push({ text: "", isCorrect: false });
+    setQuestions(updated);
+  };
+
+  const removeOption = (questionIndex: number, optionIndex: number) => {
+    const updated = [...questions];
+    if (updated[questionIndex].options.length > 2) {
+      updated[questionIndex].options.splice(optionIndex, 1);
+      setQuestions(updated);
+    }
   };
 
   const isImageUrl = (text: string) => {
@@ -248,9 +289,76 @@ export default function QuizManagement() {
     }
   };
 
+  const loadBaseQuestions = async () => {
+    if (!lessonId) return;
+
+    setLoadingQuestions(true);
+    try {
+      const quizResponse = await quizApi.getQuizByLesson(lessonId);
+
+      if (
+        quizResponse.success &&
+        quizResponse.data &&
+        quizResponse.data.length > 0
+      ) {
+        const baseQuiz = quizResponse.data[0];
+
+        const baseQuestions = baseQuiz.questions.map((q: any) => ({
+          question: q.text,
+          options: q.options.map((opt: any) => ({
+            text: opt.text,
+            isCorrect: opt.isCorrect,
+          })),
+        }));
+
+        setQuestions(baseQuestions);
+        addToast(
+          "success",
+          `Se precargaron ${baseQuestions.length} preguntas de la lección base`,
+        );
+      } else {
+        setQuestions([
+          {
+            question: "",
+            options: [
+              { text: "", isCorrect: false },
+              { text: "", isCorrect: false },
+            ],
+          },
+        ]);
+        addToast(
+          "info",
+          "No hay quiz base para esta lección. Se creó una pregunta vacía.",
+        );
+      }
+    } catch (err) {
+      addToast("error", "Error al cargar las preguntas base de la lección");
+      setQuestions([
+        {
+          question: "",
+          options: [
+            { text: "", isCorrect: false },
+            { text: "", isCorrect: false },
+          ],
+        },
+      ]);
+    } finally {
+      setLoadingQuestions(false);
+    }
+  };
+
+  const handleLessonVariantChange = (variantId: string) => {
+    setSelectedLessonVariantId(variantId);
+    if (variantId) {
+      loadBaseQuestions();
+    } else {
+      setQuestions([]);
+    }
+  };
+
   const validateQuiz = () => {
-    for (const question of newQuestions) {
-      if (!question.text.trim()) {
+    for (const question of questions) {
+      if (!question.question.trim()) {
         addToast("error", "Todas las preguntas deben tener texto");
         return false;
       }
@@ -273,192 +381,139 @@ export default function QuizManagement() {
     return true;
   };
 
-  const handleSubmitQuiz = async () => {
-    if (!lessonId || !validateQuiz()) return;
-
-    setSubmitting(true);
-
-    try {
-      const quizData = {
-        lessonId,
-        questions: newQuestions.map((q) => ({
-          text: q.text,
-          options: q.options
-            .filter((opt) => opt.text.trim())
-            .map((opt) => ({
-              text: opt.text,
-              isCorrect: opt.isCorrect,
-            })),
-        })),
-      };
-
-      let response;
-      if (editingQuiz) {
-        response = await quizApi.updateQuiz(editingQuiz.id, quizData);
-      } else {
-        response = await quizApi.createQuiz(quizData);
-      }
-
-      if (response.success) {
-        addToast(
-          "success",
-          editingQuiz
-            ? "Quiz actualizado correctamente"
-            : "Quiz creado correctamente",
-        );
-        setShowCreateModal(false);
-        setNewQuestions([]);
-        setEditingQuiz(null);
-        fetchQuizzes();
-      } else {
-        addToast(
-          "error",
-          response.message ||
-            `Error al ${editingQuiz ? "actualizar" : "crear"} el quiz`,
-        );
-      }
-    } catch (err) {
-      addToast("error", "Error de conexión");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleGoBack = () => {
-    navigate("/admin/lessons");
-  };
-
   if (loading) {
     return (
-      <div className="mx-auto w-full max-w-6xl p-6">
-        <div className="text-center">
-          <Spinner size="xl" />
-          <p className="mt-4 text-gray-600 dark:text-gray-400">
-            Cargando quizzes...
-          </p>
-        </div>
+      <div className="flex h-64 items-center justify-center">
+        <Spinner size="xl" />
       </div>
     );
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <Button color="gray" onClick={handleGoBack} className="mb-4">
-            <HiArrowLeft className="mr-2 h-4 w-4" />
-            Volver a Lecciones
-          </Button>
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-            Gestión de Quizzes
-          </h1>
-          <p className="mt-2 text-gray-600 dark:text-gray-400">
-            Administra los quizzes de esta lección
-          </p>
-        </div>
-        <Button color="success" onClick={handleCreateQuiz}>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
+          Gestión de Variantes de Quizzes
+        </h2>
+        <Button
+          onClick={() => setShowCreateModal(true)}
+          className="bg-blue-600 hover:bg-blue-700"
+        >
           <HiPlus className="mr-2 h-4 w-4" />
-          Crear Quiz
+          Crear Variante de Quiz
         </Button>
       </div>
 
       {error && (
-        <Alert color="failure" icon={HiExclamationCircle} className="mb-6">
+        <Alert color="failure" icon={HiExclamationCircle}>
           {error}
         </Alert>
       )}
 
-      <Tabs>
-        <Tabs.Item title="Quizzes Principales" active>
-          {quizzes.length === 0 ? (
-            <Card>
-              <div className="py-8 text-center">
-                <HiExclamationCircle className="mx-auto h-12 w-12 text-gray-400" />
-                <h3 className="mt-4 text-lg font-medium text-gray-900 dark:text-white">
-                  No hay quizzes
-                </h3>
-                <p className="mt-2 text-gray-600 dark:text-gray-400">
-                  Esta lección no tiene quizzes creados aún.
-                </p>
-                <Button
-                  color="success"
-                  onClick={handleCreateQuiz}
-                  className="mt-4"
+      <Card>
+        <div className="overflow-x-auto">
+          <Table>
+            <Table.Head>
+              <Table.HeadCell>Variante de Lección</Table.HeadCell>
+              <Table.HeadCell>Región</Table.HeadCell>
+              <Table.HeadCell>Preguntas</Table.HeadCell>
+              <Table.HeadCell>Acciones</Table.HeadCell>
+            </Table.Head>
+            <Table.Body className="divide-y">
+              {quizVariants.map((variant) => (
+                <Table.Row
+                  key={variant.id}
+                  className="bg-white dark:border-gray-700 dark:bg-gray-800"
                 >
-                  <HiPlus className="mr-2 h-4 w-4" />
-                  Crear Primer Quiz
-                </Button>
-              </div>
-            </Card>
-          ) : (
-            <div className="grid gap-6">
-              {quizzes.map((quiz) => (
-                <Card key={quiz.id}>
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-                        Quiz #{quiz.id.slice(-8)}
-                      </h3>
-                      <p className="mt-2 text-gray-600 dark:text-gray-400">
-                        {quiz.questions.length} pregunta
-                        {quiz.questions.length !== 1 ? "s" : ""}
-                      </p>
-                      <div className="mt-3 flex flex-wrap gap-2 text-gray-900 dark:text-white">
-                        {quiz.questions.map((question, index) => (
-                          <Badge key={question.id} color="blue">
-                            Pregunta {index + 1}
-                          </Badge>
-                        ))}
-                      </div>
+                  <Table.Cell className="whitespace-nowrap font-medium text-gray-900 dark:text-white">
+                    {variant.lessonVariant?.name || "N/A"}
+                  </Table.Cell>
+                  <Table.Cell className="text-gray-900 dark:text-white">
+                    <div className="flex items-center">
+                      {variant.lessonVariant?.region?.name || "N/A"} (
+                      {variant.lessonVariant?.region?.code || "N/A"})
                     </div>
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        color="blue"
-                        onClick={() => handleEditQuiz(quiz)}
-                      >
-                        <HiPencil className="h-4 w-4" />
-                      </Button>
+                  </Table.Cell>
+                  <Table.Cell className="text-gray-900 dark:text-white">
+                    <Badge color="blue">
+                      {variant.questionVariants.length} preguntas
+                    </Badge>
+                  </Table.Cell>
+                  <Table.Cell>
+                    <div className="flex space-x-2">
                       <Button
                         size="sm"
                         color="failure"
-                        onClick={() => handleDeleteQuiz(quiz.id)}
+                        onClick={() => handleDeleteQuizVariant(variant.id)}
                       >
                         <HiTrash className="h-4 w-4" />
                       </Button>
                     </div>
-                  </div>
-                </Card>
+                  </Table.Cell>
+                </Table.Row>
               ))}
-            </div>
-          )}
-        </Tabs.Item>
-        <Tabs.Item title="Variantes Regionales">
-          <QuizVariantManagement />
-        </Tabs.Item>
-      </Tabs>
+              {quizVariants.length === 0 && (
+                <Table.Row>
+                  <Table.Cell colSpan={4} className="text-center text-gray-500">
+                    No hay variantes de quiz creadas
+                  </Table.Cell>
+                </Table.Row>
+              )}
+            </Table.Body>
+          </Table>
+        </div>
+      </Card>
 
       <Modal
         show={showCreateModal}
         onClose={() => {
           setShowCreateModal(false);
-          setEditingQuiz(null);
-          setNewQuestions([]);
+          setQuestions([]);
+          setSelectedLessonVariantId("");
         }}
         size="4xl"
       >
-        <Modal.Header>
-          {editingQuiz ? "Editar Quiz" : "Crear Nuevo Quiz"}
-        </Modal.Header>
+        <Modal.Header>Crear Variante de Quiz</Modal.Header>
         <Modal.Body>
           <div className="space-y-6">
-            {newQuestions.map((question, questionIndex) => (
+            <div>
+              <Label htmlFor="lessonVariant" value="Variante de Lección" />
+              <div className="relative">
+                <select
+                  id="lessonVariant"
+                  value={selectedLessonVariantId}
+                  onChange={(e) => handleLessonVariantChange(e.target.value)}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                  disabled={loadingQuestions}
+                >
+                  <option value="">Selecciona una variante de lección</option>
+                  {lessonVariants.map((variant) => (
+                    <option key={variant.id} value={variant.id}>
+                      {variant.name} - {variant.region.name} (
+                      {variant.region.code})
+                    </option>
+                  ))}
+                </select>
+                {loadingQuestions && (
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2 transform">
+                    <Spinner size="sm" />
+                  </div>
+                )}
+              </div>
+              {loadingQuestions && (
+                <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                  Cargando preguntas de la lección base...
+                </p>
+              )}
+            </div>
+
+            {questions.map((question, questionIndex) => (
               <Card key={questionIndex}>
                 <div className="mb-4 flex items-center justify-between">
                   <h4 className="text-lg font-semibold text-gray-900 dark:text-white">
                     Pregunta {questionIndex + 1}
                   </h4>
-                  {newQuestions.length > 1 && (
+                  {questions.length > 1 && (
                     <Button
                       size="sm"
                       color="failure"
@@ -475,9 +530,9 @@ export default function QuizManagement() {
                   </Label>
                   <Textarea
                     id={`question-${questionIndex}`}
-                    value={question.text}
+                    value={question.question}
                     onChange={(e) =>
-                      updateQuestion(questionIndex, "text", e.target.value)
+                      updateQuestion(questionIndex, "question", e.target.value)
                     }
                     placeholder="Escribe la pregunta aquí..."
                     rows={3}
@@ -508,13 +563,13 @@ export default function QuizManagement() {
                             name={`correct-${questionIndex}`}
                             checked={option.isCorrect}
                             onChange={() => {
-                              const updated = [...newQuestions];
+                              const updated = [...questions];
                               updated[questionIndex].options.forEach(
                                 (opt, idx) => {
                                   opt.isCorrect = idx === optionIndex;
                                 },
                               );
-                              setNewQuestions(updated);
+                              setQuestions(updated);
                             }}
                             className="size-4 text-blue-600"
                           />
@@ -634,26 +689,26 @@ export default function QuizManagement() {
         <Modal.Footer>
           <Button
             color="success"
-            onClick={handleSubmitQuiz}
-            disabled={submitting}
+            onClick={handleCreateQuizVariant}
+            disabled={
+              creating || !selectedLessonVariantId || questions.length === 0
+            }
           >
-            {submitting ? (
+            {creating ? (
               <>
                 <Spinner size="sm" className="mr-2" />
-                {editingQuiz ? "Actualizando..." : "Creando..."}
+                Creando...
               </>
-            ) : editingQuiz ? (
-              "Actualizar Quiz"
             ) : (
-              "Crear Quiz"
+              "Crear Variante"
             )}
           </Button>
           <Button
             color="gray"
             onClick={() => {
               setShowCreateModal(false);
-              setEditingQuiz(null);
-              setNewQuestions([]);
+              setQuestions([]);
+              setSelectedLessonVariantId("");
             }}
           >
             Cancelar
@@ -662,4 +717,6 @@ export default function QuizManagement() {
       </Modal>
     </div>
   );
-}
+};
+
+export default QuizVariantManagement;
